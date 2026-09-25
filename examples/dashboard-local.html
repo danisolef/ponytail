@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Sin red: el navegador bloquea cualquier petición externa. Los datos nunca salen del portátil. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; form-action 'none'">
+<title>Panel local</title>
+<style>
+  :root { --bg:#fcfcfb; --card:#fff; --ink:#0b0b0b; --ink2:#52514e; --line:#e4e3df; --bar:#2a78d6; --bar-dim:#86b6ef; --focus:#184f95; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1a1a19; --card:#232322; --ink:#fff; --ink2:#c3c2b7; --line:#383835; --bar:#3987e5; --bar-dim:#1c5cab; --focus:#86b6ef; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:1100px; margin:auto; padding:24px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 4px; } p.sub { color:var(--ink2); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:20px; }
+  #drop { border:2px dashed var(--line); text-align:center; padding:32px 16px; }
+  #drop.over { border-color:var(--bar); }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  select, button { font:inherit; color:inherit; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+  button { cursor:pointer; } :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:20px; }
+  .kpi b { display:block; font-size:34px; font-variant-numeric:tabular-nums; } .kpi span { color:var(--ink2); }
+  .bars { display:grid; gap:4px; }
+  .bar { display:grid; grid-template-columns:minmax(90px,28%) 1fr auto; gap:12px; align-items:center; width:100%; text-align:left; border:0; padding:6px 8px; }
+  .bar:hover, .bar[aria-pressed=true] { background:var(--line); }
+  .bar i { display:block; height:18px; background:var(--bar); border-radius:0 4px 4px 0; transition:width .4s; }
+  .bars.filtered .bar[aria-pressed=false] i { background:var(--bar-dim); }
+  .bar em { font-style:normal; font-variant-numeric:tabular-nums; color:var(--ink2); }
+  .bar span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .scroll { overflow:auto; max-height:420px; }
+  table { border-collapse:collapse; width:100%; font-variant-numeric:tabular-nums; }
+  th, td { padding:6px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--card); cursor:pointer; }
+  .num { text-align:right; } [hidden] { display:none !important; }
+  .muted { color:var(--ink2); }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Panel local</h1>
+  <p class="sub">Todo ocurre en este portátil. Sin internet, sin servidor.</p>
+
+  <section id="drop" class="card">
+    <p><strong>Arrastra aquí un CSV</strong>, o copia un rango en Excel y pulsa <kbd>Ctrl</kbd>+<kbd>V</kbd> en esta página.</p>
+    <div class="row" style="justify-content:center">
+      <label><input type="file" id="file" accept=".csv,.tsv,.txt"> </label>
+      <button id="demo">Ver con datos de ejemplo</button>
+    </div>
+  </section>
+
+  <div id="app" hidden>
+    <section class="card row" aria-label="Controles">
+      <label>Agrupar por <select id="cat"></select></label>
+      <label>Medir <select id="val"></select></label>
+      <button id="clear" hidden>Quitar filtro</button>
+      <button id="full" title="Tecla F">Pantalla completa</button>
+    </section>
+    <section class="kpis">
+      <div class="card kpi"><b id="k-total"></b><span id="k-total-l">Total</span></div>
+      <div class="card kpi"><b id="k-rows"></b><span>Registros</span></div>
+      <div class="card kpi"><b id="k-top"></b><span id="k-top-l">Mayor</span></div>
+    </section>
+    <section class="card">
+      <h2 id="chart-t" style="margin-top:0"></h2>
+      <p class="muted" style="margin-top:-8px">Pulsa una barra para ver su detalle.</p>
+      <div id="bars" class="bars" role="group"></div>
+    </section>
+    <section class="card">
+      <h2 style="margin-top:0">Detalle <span id="det-n" class="muted"></span></h2>
+      <div class="scroll"><table id="tbl"></table></div>
+    </section>
+  </div>
+</main>
+<script>
+// Separador autodetectado (tabulador al pegar de Excel, ";" en Excel español, ",").
+function parse(text) {
+  const first = text.split('\n')[0], sep = ['\t', ';', ','].find(s => first.includes(s)) || ',';
+  const rows = [[]]; let cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') q = false; else cell += c; }
+    else if (c === '"') q = true;
+    else if (c === sep) { rows.at(-1).push(cell); cell = ''; }
+    else if (c === '\n') { rows.at(-1).push(cell.replace(/\r$/, '')); cell = ''; rows.push([]); }
+    else cell += c;
+  }
+  rows.at(-1).push(cell.replace(/\r$/, ''));
+  return rows.filter(r => r.some(v => v.trim()));
+}
+// "1.234,56 €" -> 1234.56 ; "1,234.56" -> 1234.56 ; "12%" -> 12
+// ponytail: "1.234" sin decimales se lee como miles (formato español); un 1.234 decimal inglés se malinterpreta.
+function num(s) {
+  s = String(s).replace(/[\s€$% ]/g, '');
+  if (!/^-?[\d.,]+$/.test(s)) return NaN;
+  const c = s.lastIndexOf(','), d = s.lastIndexOf('.');
+  if (c > d) s = s.replace(/\./g, '').replace(',', '.');
+  else if (c < 0 && /^-?\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  else s = s.replace(/,/g, '');
+  return parseFloat(s);
+}
+console.assert(JSON.stringify(parse('a;b\r\n"x;""y""";1.234,5\n')) === '[["a","b"],["x;\\"y\\"","1.234,5"]]', 'parse');
+console.assert(num('1.234,5 €') === 1234.5 && num('1,234.5') === 1234.5 && num('1.234') === 1234 && num('0.5') === 0.5 && isNaN(num('Madrid')), 'num');
+
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString('es-ES', { maximumFractionDigits: 2, useGrouping: 'always' });
+let head = [], data = [], pick = null, sortCol = -1, sortDir = 1;
+
+function load(text, name) {
+  const rows = parse(text);
+  if (rows.length < 2) return alert('No encuentro datos: necesito una fila de cabecera y al menos una fila.');
+  [head, ...data] = rows;
+  const isNum = head.map((_, i) => data.every(r => r[i] === undefined || r[i].trim() === '' || !isNaN(num(r[i]))));
+  const opts = f => head.map((h, i) => f(i) ? `<option value="${i}">${esc(h)}</option>` : '').join('');
+  $('cat').innerHTML = opts(i => !isNum[i]) || opts(() => true);
+  $('val').innerHTML = '<option value="-1">Nº de registros</option>' + opts(i => isNum[i]);
+  if ($('val').options.length > 1) $('val').selectedIndex = 1;
+  if (name) $('title').textContent = name.replace(/\.\w+$/, '');
+  pick = null; sortCol = -1;
+  $('drop').hidden = true; $('app').hidden = false;
+  render();
+}
+
+function render() {
+  const ci = +$('cat').value, vi = +$('val').value, vName = vi < 0 ? 'Registros' : head[vi];
+  const v = r => vi < 0 ? 1 : (num(r[vi]) || 0);
+  const groups = new Map();
+  data.forEach(r => groups.set(r[ci] ?? '', (groups.get(r[ci]) || 0) + v(r)));
+  const sorted = [...groups].sort((a, b) => b[1] - a[1]), max = Math.max(...sorted.map(g => Math.abs(g[1])), 1);
+  const rows = pick === null ? data : data.filter(r => (r[ci] ?? '') === pick);
+
+  $('k-total').textContent = fmt(rows.reduce((s, r) => s + v(r), 0));
+  $('k-total-l').textContent = `${vName}${pick === null ? ' total' : ' · ' + pick}`;
+  $('k-rows').textContent = fmt(rows.length);
+  $('k-top').textContent = sorted[0][0] || '—';
+  $('k-top-l').textContent = `Mayor ${head[ci]} (${fmt(sorted[0][1])})`;
+  $('chart-t').textContent = `${vName} por ${head[ci]}`;
+  $('clear').hidden = pick === null;
+
+  $('bars').className = 'bars' + (pick === null ? '' : ' filtered');
+  $('bars').innerHTML = sorted.map(([k, n]) =>
+    `<button class="bar" aria-pressed="${k === pick}" data-k="${esc(k)}" title="${esc(k)}: ${fmt(n)}">
+       <span>${esc(k || '(vacío)')}</span><i style="width:${Math.abs(n) / max * 100}%"></i><em>${fmt(n)}</em></button>`).join('');
+
+  const shown = sortCol < 0 ? rows : [...rows].sort((a, b) => {
+    const x = num(a[sortCol]), y = num(b[sortCol]);
+    return sortDir * (isNaN(x) || isNaN(y) ? String(a[sortCol]).localeCompare(b[sortCol], 'es') : x - y);
+  });
+  $('det-n').textContent = `(${rows.length})`;
+  $('tbl').innerHTML = `<thead><tr>${head.map((h, i) => `<th data-i="${i}" aria-sort="${i === sortCol ? (sortDir > 0 ? 'ascending' : 'descending') : 'none'}">${esc(h)}${i === sortCol ? (sortDir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr></thead>
+    <tbody>${shown.slice(0, 500).map(r => `<tr>${head.map((_, i) => `<td${isNaN(num(r[i])) ? '' : ' class="num"'}>${esc(r[i] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>`;
+}
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+$('bars').onclick = e => { const b = e.target.closest('.bar'); if (!b) return; pick = pick === b.dataset.k ? null : b.dataset.k; render(); };
+$('tbl').onclick = e => { const th = e.target.closest('th'); if (!th) return; const i = +th.dataset.i; sortDir = i === sortCol ? -sortDir : 1; sortCol = i; render(); };
+$('cat').onchange = () => { pick = null; render(); };
+$('val').onchange = render;
+$('clear').onclick = () => { pick = null; render(); };
+$('full').onclick = () => document.documentElement.requestFullscreen();
+document.onkeydown = e => { if (e.key === 'f' && !/INPUT|SELECT/.test(e.target.tagName) && !$('app').hidden) $('full').click(); if (e.key === 'Escape' && pick !== null) { pick = null; render(); } };
+document.onpaste = e => load(e.clipboardData.getData('text'), 'Datos pegados');
+$('file').onchange = e => e.target.files[0]?.text().then(t => load(t, e.target.files[0].name));
+$('drop').ondragover = e => { e.preventDefault(); $('drop').classList.add('over'); };
+$('drop').ondragleave = () => $('drop').classList.remove('over');
+$('drop').ondrop = e => { e.preventDefault(); const f = e.dataTransfer.files[0]; f?.text().then(t => load(t, f.name)); };
+$('demo').onclick = () => load(`Región;Producto;Mes;Ventas €;Unidades
+Norte;Alfa;Ene;12.400;31
+Norte;Beta;Ene;8.150,50;20
+Sur;Alfa;Ene;15.900;40
+Sur;Gamma;Feb;4.300;12
+Este;Beta;Feb;9.870;25
+Este;Alfa;Mar;11.200;28
+Oeste;Gamma;Mar;6.540;17
+Centro;Alfa;Mar;21.300;52
+Centro;Beta;Mar;7.800;19`, 'Ventas de ejemplo');
+</script>
+</body>
+</html>
